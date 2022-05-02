@@ -1,0 +1,165 @@
+pipeline:
+    name: ws_helloworld
+    identifier: ws_helloworld
+    allowStageExecutions: false
+    stages:
+        - stage:
+              name: Build
+              identifier: Build
+              type: CI
+              spec:
+                  cloneCodebase: true
+                  infrastructure:
+                      type: KubernetesDirect
+                      spec:
+                          connectorRef: account.danfstatestcluster
+                          namespace: harness-delegate-ng-statest
+                          automountServiceAccountToken: true
+                  execution:
+                      steps:
+                          - step:
+                                type: Run
+                                name: build hello world
+                                identifier: build_hello_world
+                                spec:
+                                    connectorRef: account.harnessImage
+                                    image: maven:3.5.2-jdk-8-alpine
+                                    shell: Sh
+                                    command: |
+                                        echo pom.xml is:
+                                        cat pom.xml
+                                        echo maven build
+                                        mvn -DskipTests clean package
+                                        MVN_VERSION=$(mvn -q \
+                                            -Dexec.executable=echo \
+                                            -Dexec.args='${project.version}' \
+                                            --non-recursive \
+                                            exec:exec)
+                                        export MVN_VERSION
+                                    outputVariables:
+                                        - name: MVN_VERSION
+                                failureStrategies: []
+                          - parallel:
+                                - step:
+                                      type: Run
+                                      name: scan
+                                      identifier: scan
+                                      spec:
+                                          connectorRef: account.harnessImage
+                                          image: maven:3.5.2-jdk-8-alpine
+                                          shell: Sh
+                                          command: |-
+                                              echo Scan hello world
+                                              ls -catl
+                                              ls -catl target
+                                - step:
+                                      type: RunTests
+                                      name: unit tests
+                                      identifier: unit_tests
+                                      spec:
+                                          connectorRef: account.harnessImage
+                                          image: maven:3.5.2-jdk-8-alpine
+                                          language: Java
+                                          buildTool: Maven
+                                          args: test
+                                          runOnlySelectedTests: true
+                                - step:
+                                      type: Run
+                                      name: bd scan
+                                      identifier: bd_scan
+                                      spec:
+                                          connectorRef: account.harnessImage
+                                          image: maven:3.5.2-jdk-8-alpine
+                                          shell: Sh
+                                          command: |
+                                              echo Blackduck scan
+                  sharedPaths:
+                      - /root/.m2
+        - stage:
+              name: Validate
+              identifier: Validate
+              type: CI
+              spec:
+                  cloneCodebase: true
+                  infrastructure:
+                      useFromStage: Build
+                  execution:
+                      steps:
+                          - step:
+                                type: Run
+                                name: validate
+                                identifier: validate
+                                spec:
+                                    connectorRef: account.harnessImage
+                                    image: maven:3.5.2-jdk-8-alpine
+                                    shell: Sh
+                                    command: |
+                                        echo validate
+                                        echo Version is ${MVN_VERSION}
+                                        cat pom.xml
+                                        MVN_VERSION=$(mvn -q \
+                                            -Dexec.executable=echo \
+                                            -Dexec.args='${project.version}' \
+                                            --non-recursive \
+                                            exec:exec)
+                                        export MVN_VERSION
+              when:
+                  pipelineStatus: Success
+              variables:
+                  - name: MVN_VERSION
+                    type: String
+                    value: <+pipeline.stages.Build.spec.execution.steps.build_hello_world.output.outputVariables.MVN_VERSION>
+        - stage:
+              name: Promote Approval
+              identifier: Promote_Approval
+              description: ""
+              type: Approval
+              spec:
+                  execution:
+                      steps:
+                          - step:
+                                name: Approval
+                                identifier: approval
+                                type: HarnessApproval
+                                timeout: 1d
+                                spec:
+                                    approvalMessage: Approve for promotion of a build
+                                    includePipelineExecutionHistory: true
+                                    approvers:
+                                        minimumCount: 1
+                                        disallowPipelineExecutor: false
+                                        userGroups:
+                                            - Approvers
+                                    approverInputs: []
+                                failureStrategies: []
+              tags: {}
+        - stage:
+              name: Promote
+              identifier: Promote
+              type: CI
+              spec:
+                  cloneCodebase: true
+                  execution:
+                      steps:
+                          - step:
+                                type: Run
+                                name: promote
+                                identifier: promote
+                                spec:
+                                    connectorRef: account.harnessImage
+                                    image: maven:3.5.2-jdk-8-alpine
+                                    shell: Sh
+                                    command: echo promote ${MVN_VERSION}
+                  infrastructure:
+                      useFromStage: Build
+    projectIdentifier: DevOps_Team
+    orgIdentifier: default
+    tags: {}
+    properties:
+        ci:
+            codebase:
+                connectorRef: ws_helloworld
+                repoName: helloworld
+                build: <+input>
+    flowControl:
+        barriers: []
